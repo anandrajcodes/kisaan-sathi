@@ -3,24 +3,22 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI,HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, field_validator
 
 from soil.assessment import assess_soil_ph, assess_nutrients
 from soil.fertilizer import recommend_fertilizer
-from pydantic import BaseModel, Field, field_validator
-
+from weather.service import geocode_district, get_weather_by_coords
 
 # Project paths
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = ROOT / "models" / "crop_model.joblib"
 
-
 # Initialize FastAPI
 app = FastAPI(
     title="SoilHealthAI",
-    description="AI-driven soil assessment and crop suitability",
-    version="0.3.0"
+    description="AI-driven soil assessment, weather intelligence, and crop suitability",
+    version="0.4.0"
 )
 
 
@@ -132,3 +130,50 @@ def fertilizer_endpoint(data: FertilizerInput):
             status_code=422,
             detail=str(error)
         )
+
+
+# Weather and geocoding endpoints (Powered by Open-Meteo)
+@app.get("/weather/search")
+def search_locations(query: str):
+    """Search districts and cities using Open-Meteo Geocoding."""
+    query = (query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query cannot be empty.")
+    try:
+        results = geocode_district(query)
+        return {"query": query, "count": len(results), "results": results}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Geocoding service error: {exc}")
+
+
+@app.get("/weather/coordinates")
+def weather_by_coordinates(lat: float, lon: float, location_name: str = ""):
+    """Fetch current and rolling agro-climatic conditions for given latitude and longitude."""
+    try:
+        return get_weather_by_coords(latitude=lat, longitude=lon, location_name=location_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Weather service error: {exc}")
+
+
+@app.get("/weather/district")
+def weather_by_district(query: str):
+    """Geocode a district query and fetch its agro-climatic profile in a single call."""
+    query = (query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="District query cannot be empty.")
+    try:
+        places = geocode_district(query, count=1)
+        if not places:
+            raise HTTPException(status_code=404, detail=f"No district found matching '{query}'.")
+        top_place = places[0]
+        return get_weather_by_coords(
+            latitude=top_place["latitude"],
+            longitude=top_place["longitude"],
+            location_name=top_place["display_name"],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Weather service error: {exc}")
